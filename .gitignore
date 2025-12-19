@@ -1,0 +1,42 @@
+# Ansible project .gitignore
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.vscode/
+/*venv/
+.env/
+.env
+ENV/
+
+# Ansible facts cache and logs
+.fact_cache/
+*.log
+
+# Secrets and vault files
+*.vault
+*.secret
+*.key
+*.pem
+*.crt
+*.j2~
+
+# Inventory and host_vars/group_vars backups
+inventory/hosts
+inventory/*/env.yml
+
+# Temporary files
+*.swp
+*.swo
+*.tmp
+*.bak
+tests/
+
+# System files
+.DS_Store
+Thumbs.db
+  

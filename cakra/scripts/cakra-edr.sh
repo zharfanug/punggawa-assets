@@ -33,6 +33,7 @@ RPM_NIDS_URL=https://artifacts.elastic.co/downloads/beats/packetbeat/packetbeat-
 DFIR_VER="0.75.5"
 DFIR_MAJOR_VER="0.75"
 DFIR_URL=https://github.com/Velocidex/velociraptor/releases/download/v${DFIR_MAJOR_VER}/velociraptor-v${DFIR_VER}-linux-amd64
+DFIR_OLD_URL=https://github.com/Velocidex/velociraptor/releases/download/v${DFIR_MAJOR_VER}/velociraptor-v${DFIR_VER}-linux-amd64-musl
 
 ## Prints information
 logger() {
@@ -627,12 +628,44 @@ installDFIR() {
     cd "$BASE_PATH/binaries"
     if [ "${PKGTYPE}" == "dpkg" ]; then
       "${BASE_PATH}/binaries/velociraptor" debian client --config "${BASE_PATH}/config/${KEY}.yaml" --output "${BASE_PATH}/binaries/" >> "$LOG_PATH" 2>&1
-      dpkg -i "${BASE_PATH}/binaries/velociraptor_client_${DFIR_VER}_amd64.deb" >> "$LOG_PATH" 2>&1
-      install_result="${PIPESTATUS[0]}"
+      gen_pkg_status="${PIPESTATUS[0]}"
+      if [ "$gen_pkg_status" -ne 0 ]; then
+        logger -d "Cakra DFIR package generation failed."
+        downloadFile "${DFIR_OLD_URL}" "${BASE_PATH}/binaries/velociraptor_old"
+        chmod +x "${BASE_PATH}/binaries/velociraptor_old" >> "$LOG_PATH" 2>&1
+        logger -d "Generating package using old velociraptor binary."
+        "${BASE_PATH}/binaries/velociraptor_old" debian client --config "${BASE_PATH}/config/${KEY}.yaml" --output "${BASE_PATH}/binaries/" >> "$LOG_PATH" 2>&1
+        gen_pkg_status="${PIPESTATUS[0]}"
+        if [ "$gen_pkg_status" -ne 0 ]; then
+          logger -e "Cakra DFIR not supported on this system."
+        else
+          dpkg -i "${BASE_PATH}/binaries/velociraptor_client_${DFIR_VER}_amd64.deb" >> "$LOG_PATH" 2>&1
+          install_result="${PIPESTATUS[0]}"
+        fi
+      else
+        dpkg -i "${BASE_PATH}/binaries/velociraptor_client_${DFIR_VER}_amd64.deb" >> "$LOG_PATH" 2>&1
+        install_result="${PIPESTATUS[0]}"
+      fi
     elif [ "${PKGTYPE}" == "rpm" ]; then
       "${BASE_PATH}/binaries/velociraptor" rpm client --config "${BASE_PATH}/config/${KEY}.yaml" --output "${BASE_PATH}/binaries/" >> "$LOG_PATH" 2>&1
-      rpm -Uvh "${BASE_PATH}/binaries/velociraptor_client_${DFIR_VER}_x86_64.rpm" >> "$LOG_PATH" 2>&1
-      install_result="${PIPESTATUS[0]}"
+      gen_pkg_status="${PIPESTATUS[0]}"
+      if [ "$gen_pkg_status" -ne 0 ]; then
+        logger -d "Cakra DFIR package generation failed."
+        downloadFile "${DFIR_OLD_URL}" "${BASE_PATH}/binaries/velociraptor_old"
+        chmod +x "${BASE_PATH}/binaries/velociraptor_old" >> "$LOG_PATH" 2>&1
+        logger -d "Generating package using old velociraptor binary."
+        "${BASE_PATH}/binaries/velociraptor_old" rpm client --config "${BASE_PATH}/config/${KEY}.yaml" --output "${BASE_PATH}/binaries/" >> "$LOG_PATH" 2>&1
+        gen_pkg_status="${PIPESTATUS[0]}"
+        if [ "$gen_pkg_status" -ne 0 ]; then
+          logger -e "Cakra DFIR not supported on this system."
+        else
+          rpm -Uvh "${BASE_PATH}/binaries/velociraptor_client_${DFIR_VER}_x86_64.rpm" >> "$LOG_PATH" 2>&1
+          install_result="${PIPESTATUS[0]}"
+        fi
+      else
+        rpm -Uvh "${BASE_PATH}/binaries/velociraptor_client_${DFIR_VER}_x86_64.rpm" >> "$LOG_PATH" 2>&1
+        install_result="${PIPESTATUS[0]}"
+      fi
     else
       logger -e "Unsupported system. No supported package system detected."
       exit 1

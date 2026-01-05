@@ -675,7 +675,7 @@ installDFIR() {
       exit 1
     else
       logger "Cakra DFIR installed successfully."
-      startService velociraptor-client "Cakra DFIR"
+      startService velociraptor_client "Cakra DFIR"
     fi
   fi
 }

@@ -32,8 +32,9 @@ DPKG_NIDS_URL=https://artifacts.elastic.co/downloads/beats/packetbeat/packetbeat
 RPM_NIDS_URL=https://artifacts.elastic.co/downloads/beats/packetbeat/packetbeat-${NIDS_VER}-x86_64.rpm
 DFIR_VER="0.75.5"
 DFIR_MAJOR_VER="0.75"
-DFIR_URL=https://github.com/Velocidex/velociraptor/releases/download/v${DFIR_MAJOR_VER}/velociraptor-v${DFIR_VER}-linux-amd64
-DFIR_OLD_URL=https://github.com/Velocidex/velociraptor/releases/download/v${DFIR_MAJOR_VER}/velociraptor-v${DFIR_VER}-linux-amd64-musl
+DFIR_URL=https://github.com/Velocidex/velociraptor/releases/download/v${DFIR_MAJOR_VER}/velociraptor-v${DFIR_VER}-linux-amd64-musl
+
+yq_URL="https://github.com/mikefarah/yq/releases/download/v4.50.1/yq_linux_amd64"
 
 ## Prints information
 logger() {
@@ -256,6 +257,11 @@ downloadFile() {
   url="$1"
   dest="$2"
 
+  dest_dir=$(dirname "$dest")
+  if [ "$dest_dir" != "." ]; then
+    mkdir -p "$dest_dir" || return 1
+  fi
+
   if command -v wget >/dev/null 2>&1; then
     wget -q -O "$dest" "$url" >> "$LOG_PATH" 2>&1 || return 1
     return 0
@@ -325,25 +331,29 @@ installCmdFromRepo() {
 startService() {
   svc="$1"
   svc_name="${2:-$1}"
+
   if [ "$#" -lt 1 ]; then
     logger -e "startService must be called with at least 1 argument."
     exit 1
   fi
 
   logger "Starting ${svc_name}..."
+
+  # 1. Systemd (modern Linux)
   if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >> "$LOG_PATH" 2>&1 || return 1
     systemctl enable "${svc}.service" >> "$LOG_PATH" 2>&1 || return 1
     logger -d "${svc_name} enabled to start on boot."
     systemctl start  "${svc}.service" >> "$LOG_PATH" 2>&1 || {
       logger -e "${svc_name} could not be started."
-      command -v journalctl >/dev/null 2>&1 && journalctl -u "$svc" >> "$LOG_PATH" 2>&1
+      command -v journalctl >/dev/null 2>&1 && journalctl -u "$svc" -n 50 >> "$LOG_PATH" 2>&1
       return 1
     }
     logger "${svc_name} started."
     return 0
   fi
 
+  # 2. Service Command (SysVinit/Upstart wrapper)
   if command -v service >/dev/null 2>&1; then
     if command -v chkconfig >/dev/null 2>&1; then
       chkconfig "$svc" on >> "$LOG_PATH" 2>&1 || {
@@ -370,6 +380,7 @@ startService() {
     return 0
   fi
 
+  # 3. Direct Init Script (/etc/init.d/)
   if [ -x "/etc/init.d/$svc" ]; then
     if command -v chkconfig >/dev/null 2>&1; then
       chkconfig "$svc" on >> "$LOG_PATH" 2>&1 || {
@@ -388,6 +399,7 @@ startService() {
     return 0
   fi
 
+  # 4. Legacy Path (/etc/rc.d/init.d/)
   if [ -x "/etc/rc.d/init.d/$svc" ]; then
     "/etc/rc.d/init.d/$svc" start >> "$LOG_PATH" 2>&1 || {
       logger -e "${svc_name} could not be started."
@@ -402,10 +414,82 @@ startService() {
   return 1
 }
 
-createInstallPath() {
-  if [ ! -d "${BASE_PATH}" ]; then
-    mkdir -p "${BASE_PATH}"
+stopService() {
+  svc="$1"
+  svc_name="${2:-$1}"
+  
+  if [ "$#" -lt 1 ]; then
+    logger -e "stopService must be called with at least 1 argument."
+    exit 1
   fi
+
+  logger "Stopping ${svc_name}..."
+
+  # 1. Systemd (modern Linux)
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >> "$LOG_PATH" 2>&1
+    systemctl disable "${svc}.service" >> "$LOG_PATH" 2>&1
+    logger -d "${svc_name} disabled from starting on boot."
+    
+    systemctl stop "${svc}.service" >> "$LOG_PATH" 2>&1 || {
+      logger -e "${svc_name} could not be stopped."
+      command -v journalctl >/dev/null 2>&1 && journalctl -u "$svc" -n 50 >> "$LOG_PATH" 2>&1
+      return 1
+    }
+    logger "${svc_name} stopped."
+    return 0
+  fi
+
+  # 2. Service Command (SysVinit/Upstart wrapper)
+  if command -v service >/dev/null 2>&1; then
+    if command -v chkconfig >/dev/null 2>&1; then
+      chkconfig "$svc" off >> "$LOG_PATH" 2>&1
+      logger -d "${svc_name} disabled from starting on boot."
+    fi
+    
+    service "$svc" stop >> "$LOG_PATH" 2>&1 || {
+      logger -e "${svc_name} could not be stopped."
+      return 1
+    }
+    logger "${svc_name} stopped."
+    return 0
+  fi
+
+  # 3. Direct Init Script (/etc/init.d/)
+  if [ -x "/etc/init.d/$svc" ]; then
+    if command -v chkconfig >/dev/null 2>&1; then
+      chkconfig "$svc" off >> "$LOG_PATH" 2>&1
+    fi
+    
+    "/etc/init.d/$svc" stop >> "$LOG_PATH" 2>&1 || {
+      logger -e "${svc_name} could not be stopped."
+      return 1
+    }
+    logger "${svc_name} stopped."
+    return 0
+  fi
+
+  # 4. Legacy Path (/etc/rc.d/init.d/)
+  if [ -x "/etc/rc.d/init.d/$svc" ]; then
+    "/etc/rc.d/init.d/$svc" stop >> "$LOG_PATH" 2>&1 || {
+      logger -e "${svc_name} could not be stopped."
+      return 1
+    }
+    logger "${svc_name} stopped."
+    return 0
+  fi
+
+  logger -e "$svc could not be stopped. No service manager found."
+  return 1
+}
+
+prepareCakraPath() {
+  mkdir -p "${BASE_PATH}" >> "$LOG_PATH" 2>&1
+  mkdir -p "${BASE_PATH}/binaries" >> "$LOG_PATH" 2>&1
+  if [ ! -f "${BASE_PATH}/binaries/yq" ]; then
+    downloadFile "${yq_URL}" "${BASE_PATH}/binaries/yq" >> "$LOG_PATH" 2>&1
+  fi
+  chmod +x "${BASE_PATH}/binaries/yq" >> "$LOG_PATH" 2>&1
 }
 
 checkTcpPort() {
@@ -447,7 +531,7 @@ checkTcpPort() {
   return 1
 }
 
-checkReqPort() {
+checkPort() {
   host="$1"
   port="$2"
   if checkTcpPort $host $port; then
@@ -459,8 +543,8 @@ checkReqPort() {
 }
 
 edrNetworkCheck() {
-  checkReqPort "$MANAGER" "$MANAGER_PORT"
-  checkReqPort "$MANAGER" "$REG_PORT"
+  checkPort "$MANAGER" "$MANAGER_PORT"
+  checkPort "$MANAGER" "$REG_PORT"
 }
 
 
@@ -606,10 +690,22 @@ installNIDS() {
   fi
 }
 
+checkDFIRConnection() {
+  downloadFile "https://raw.githubusercontent.com/zharfanug/punggawa-assets/refs/heads/main/cakra/scripts/${KEY}.yaml" "${BASE_PATH}/config/${KEY}.yaml" >> "$LOG_PATH" 2>&1
+  "${BASE_PATH}/binaries/yq" '.Client.server_urls[0]' "${BASE_PATH}/config/${KEY}.yaml" >> "$LOG_PATH" 2>&1
+  DFIR_SERVER_URL=$("${BASE_PATH}/binaries/yq" '.Client.server_urls[0]' "${BASE_PATH}/config/${KEY}.yaml")
+  tmp=${DFIR_SERVER_URL#*://} # remove scheme
+  tmp=${tmp%/} # remove trailing slash
+  DFIR_HOST=${tmp%%:*}
+  DFIR_PORT=${tmp##*:}
+  checkPort "$DFIR_HOST" "$DFIR_PORT"
+}
+
 configDFIR() {
   logger "Updating Cakra DFIR configuration..."
   downloadFile "https://raw.githubusercontent.com/zharfanug/punggawa-assets/refs/heads/main/cakra/scripts/${KEY}.yaml" "/etc/velociraptor/client.config.yaml" >> "$LOG_PATH" 2>&1
-  startService velociraptor-client "Cakra DFIR"
+  checkDFIRConnection
+  startService velociraptor_client "Cakra DFIR"
 }
 
 installDFIR() {
@@ -624,8 +720,10 @@ installDFIR() {
     mkdir -p "$BASE_PATH/config" >> "$LOG_PATH" 2>&1
     downloadFile "${DFIR_URL}" "${BASE_PATH}/binaries/velociraptor"
     chmod +x "${BASE_PATH}/binaries/velociraptor" >> "$LOG_PATH" 2>&1
+    checkDFIRConnection
     downloadFile "https://raw.githubusercontent.com/zharfanug/punggawa-assets/refs/heads/main/cakra/scripts/${KEY}.yaml" "${BASE_PATH}/config/${KEY}.yaml" >> "$LOG_PATH" 2>&1
     cd "$BASE_PATH/binaries"
+    "${BASE_PATH}/binaries/velociraptor" debian client --config "${BASE_PATH}/config/${KEY}.yaml" --output "${BASE_PATH}/binaries/" >> "$LOG_PATH" 2>&1
     if [ "${PKGTYPE}" == "dpkg" ]; then
       "${BASE_PATH}/binaries/velociraptor" debian client --config "${BASE_PATH}/config/${KEY}.yaml" --output "${BASE_PATH}/binaries/" >> "$LOG_PATH" 2>&1
       gen_pkg_status="${PIPESTATUS[0]}"
@@ -684,7 +782,6 @@ doInstall() {
   if [ ! -f "$LOG_PATH" ]; then
     touch "$LOG_PATH"
   fi
-  createInstallPath
   installEDR
   installHIDS
   installNIDS
@@ -764,6 +861,7 @@ doPatches() {
 
 main() {
   parseArgs "$@"
+  prepareCakraPath
   if [ "$DO_INSTALL" -eq 1 ]; then
     LOG_PATH="/var/log/cakra-edr-install.log"
     doInstall
